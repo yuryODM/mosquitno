@@ -7,54 +7,44 @@ import math
 
 SOUND_SPEED = 343.2
 
-MIC_DISTANCE_4 = 0.08127  # distance between adjacent mics
+MIC_DISTANCE_4 = 0.08127
 MAX_TDOA_4 = MIC_DISTANCE_4 / SOUND_SPEED
 
 
 class MicArray:
-    """
-    Handles audio input from 6-channel mic array.
-    Channel mapping:
-        0: processed audio (ignore)
-        1-4: raw mic channels (used for DoA)
-        5: merged playback (ignore)
-    """
-
-    def __init__(self, rate=16000, channels=4, chunk_size=None):
+    def __init__(self, rate=16000, channels=6, chunk_size=None):
         self.pyaudio_instance = pyaudio.PyAudio()
         self.queue = queue.Queue()
         self.quit_event = threading.Event()
-        self.sample_rate = rate
-        self.total_channels = 6           # physical channels from the device
-        self.channels = channels          # number of raw mic channels to use
-        self.chunk_size = chunk_size if chunk_size else int(rate / 100)
-        # map raw mic channels dynamically
-        self.mic_indices = list(range(1, 1 + self.channels))
 
-        # Find input device
+        self.sample_rate = rate
+        self.channels = channels              # total device channels
+        self.chunk_size = chunk_size if chunk_size else int(rate / 100)
+        self.mic_indices = [1, 2, 3, 4]      # raw mic channels for DOA
+        self.total_channels = self.channels  # used for slicing
+
+        # Find input device with enough channels
         device_index = None
         for i in range(self.pyaudio_instance.get_device_count()):
             dev = self.pyaudio_instance.get_device_info_by_index(i)
-            print(i, dev['name'], dev['maxInputChannels'], dev['maxOutputChannels'])
-            if dev['maxInputChannels'] >= max(self.mic_indices) + 1:
-                print('Use device:', dev['name'])
+            if dev['maxInputChannels'] >= self.channels:
+                print(f"Use device: {dev['name']}")
                 device_index = i
                 break
 
         if device_index is None:
-            raise Exception(
-                f'Cannot find input device with at least {max(self.mic_indices)+1} channels'
-            )
+            raise Exception(f"Cannot find input device with at least {self.channels} channels")
 
+        # Open stream
         self.stream = self.pyaudio_instance.open(
             input=True,
             start=False,
             format=pyaudio.paInt16,
-            channels=self.total_channels,
-            rate=self.sample_rate,
-            frames_per_buffer=self.chunk_size,
+            channels=self.channels,
+            rate=int(self.sample_rate),
+            frames_per_buffer=int(self.chunk_size),
             stream_callback=self._callback,
-            input_device_index=device_index,
+            input_device_index=device_index
         )
 
     def _callback(self, in_data, frame_count, time_info, status):
@@ -71,7 +61,7 @@ class MicArray:
             frames = self.queue.get()
             if not frames:
                 break
-            frames = np.frombuffer(frames, dtype=np.int16)
+            frames = np.frombuffer(frames, dtype='int16')
             yield frames
 
     def stop(self):
@@ -90,41 +80,35 @@ class MicArray:
 
     def get_direction(self, buf):
         """
-        Compute DoA in degrees [0, 360] using GCC-PHAT.
-        Returns None if invalid.
+        Compute DOA from 4 raw mics (channels 1-4).
+        Returns azimuth in degrees.
         """
-        if self.channels < 2:
-            return None  # cannot compute DoA with less than 2 mics
+        MIC_GROUP_N = 2
+        MIC_GROUP = [[1, 3], [2, 4]]  # mic pairs for TDOA
 
-        best_guess = None
-        # generate mic pairs (adjacent mics)
-        MIC_GROUP = [[i, i + 1] for i in range(self.channels - 1)]
-        tau_list = []
-        theta_list = []
+        tau = [0] * MIC_GROUP_N
+        theta = [0] * MIC_GROUP_N
 
-        for pair in MIC_GROUP:
-            ch0 = self.mic_indices[pair[0]]
-            ch1 = self.mic_indices[pair[1]]
+        for i, pair in enumerate(MIC_GROUP):
+            # Slice each mic from the interleaved buffer
+            mic_a = buf[pair[0]::self.total_channels]
+            mic_b = buf[pair[1]::self.total_channels]
+            tau[i], _ = gcc_phat(mic_a, mic_b, fs=self.sample_rate, max_tau=MAX_TDOA_4, interp=1)
+            theta[i] = math.asin(tau[i] / MAX_TDOA_4) * 180 / math.pi
 
-            try:
-                tau, _ = gcc_phat(
-                    buf[ch0::self.total_channels],
-                    buf[ch1::self.total_channels],
-                    fs=self.sample_rate,
-                    max_tau=MAX_TDOA_4,
-                    interp=1,
-                )
-                # clamp tau
-                tau = max(-MAX_TDOA_4, min(MAX_TDOA_4, tau))
-                tau_list.append(tau)
-                theta_list.append(math.asin(tau / MAX_TDOA_4) * 180 / math.pi)
-            except Exception:
-                tau_list.append(0)
-                theta_list.append(0)
+        # Combine two theta estimates into a single azimuth
+        if np.abs(theta[0]) < np.abs(theta[1]):
+            if theta[1] > 0:
+                best_guess = (theta[0] + 360) % 360
+            else:
+                best_guess = (180 - theta[0])
+        else:
+            if theta[0] < 0:
+                best_guess = (theta[1] + 360) % 360
+            else:
+                best_guess = (180 - theta[1])
+            best_guess = (best_guess + 90 + 180) % 360
 
-        if tau_list:
-            min_idx = np.argmin(np.abs(tau_list))
-            angle = theta_list[min_idx]
-            best_guess = (angle + 360) % 360
-
+        # Optional calibration offset
+        best_guess = (-best_guess + 120) % 360
         return best_guess

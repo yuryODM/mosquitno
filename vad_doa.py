@@ -1,16 +1,16 @@
 import sys
+import time
 import numpy as np
 from mic_array import MicArray
 from pixel_ring import pixel_ring
 
 RATE = 16000
-CHANNELS = 4           # raw mic channels we use
+CHANNELS = 6           # total USB channels from ReSpeaker device
 FRAME_MS = 10          # ms per analysis frame
-DOA_FRAMES = 200       # ms per DoA calculation
-THRESHOLD = 0.01       # mosquito detection threshold
+THRESHOLD = 0.1       # mosquito detection threshold
 
 
-def is_mosquito(chunk, rate, freq_min=85, freq_max=150, threshold=THRESHOLD):
+def is_mosquito(chunk, rate, freq_min=650, freq_max=850, threshold=THRESHOLD):
     """Detect if mosquito frequency is present in the audio chunk."""
     fft = np.fft.rfft(chunk)
     fft_magnitude = np.abs(fft)
@@ -26,36 +26,24 @@ def is_mosquito(chunk, rate, freq_min=85, freq_max=150, threshold=THRESHOLD):
 
 
 def main():
-    mosquito_count = 0
-    chunks = []
-    doa_chunks = int(DOA_FRAMES / FRAME_MS)
-
     try:
-        with MicArray(RATE, channels=CHANNELS, chunk_size=int(RATE * FRAME_MS / 1000)) as mic:
+        # Open the mic array with 6 channels (ASR + 4 raw mics + merged)
+        chunk_size = int(RATE * FRAME_MS / 1000)
+        with MicArray(RATE, channels=CHANNELS, chunk_size=chunk_size) as mic:
             for chunk in mic.read_chunks():
-                # Use only the first raw channel for mosquito detection
-                if is_mosquito(chunk[mic.mic_indices[0]::mic.total_channels], RATE):
-                    mosquito_count += 1
-                    sys.stdout.write('1')
-                else:
-                    sys.stdout.write('0')
-                sys.stdout.flush()
+                # Use only the first raw mic channel (channel 1)
+                channel_data = chunk[mic.mic_indices[0]::mic.total_channels]  # channel 1, step by total channels
+                if is_mosquito(channel_data, RATE):
+                    print("🐝 Mosquito detected!")
 
-                chunks.append(chunk)
-                if len(chunks) == doa_chunks:
-                    if mosquito_count > (doa_chunks / 2):
-                        frames = np.concatenate(chunks)
-                        direction = mic.get_direction(frames)
-
-                        if direction is not None:
-                            pixel_ring.set_direction(direction)
-                            print('\nMosquito detected at direction: {:.0f}°'.format(direction))
-                        else:
-                            pixel_ring.off()
-                            print('\nMosquito detected, but direction unknown')
-
-                    mosquito_count = 0
-                    chunks = []
+                    # Compute direction immediately using all raw mic channels
+                    direction = mic.get_direction(chunk)
+                    if direction is not None:
+                        pixel_ring.set_direction(direction)
+                        print('Mosquito direction: {:.0f}°'.format(direction))
+                    else:
+                        pixel_ring.off()
+                        print('Direction unknown')
 
     except KeyboardInterrupt:
         pass
