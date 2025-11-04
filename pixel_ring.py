@@ -1,230 +1,185 @@
-#!/usr/bin/env python
 """
-DFU tool for ReSpeaker USB Mic Array
+ To control the pixel ring of the ReSpeaker microphone array
+ Copyright (c) 2016-2017 Seeed Technology Limited.
 
-Requirements:
-    pip install pyusb click
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-Usage:
-    python dfu.py --download new_firmware.bin
-    python dfu.py --revertfactory
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
 """
 
-import sys
-import time
 import usb.core
 import usb.util
-import click
 
 
-class DFU(object):
-    TIMEOUT = 120000
-
-    DFU_DETACH = 0
-    DFU_DNLOAD = 1
-    DFU_UPLOAD = 2
-    DFU_GETSTATUS = 3
-    DFU_CLRSTATUS = 4
-    DFU_GETSTATE = 5
-    DFU_ABORT = 6
-
-    DFU_STATUS_DICT = {
-        0x00: 'No error condition is present.',
-        0x01: 'File is not targeted for use by this device.',
-        0x02: 'File is for this device but fails some vendor-specific '
-            'verification test.',
-        0x03: 'Device is unable to write memory.',
-        0x04: 'Memory erase function failed.',
-        0x05: 'Memory erase check failed.',
-        0x06: 'Program memory function failed.',
-        0x07: 'Programmed memory failed verification.',
-        0x08: 'Cannot program memory due to received address that is our of '
-            'range.',
-        0x09: 'Received DFU_DNLOAD with wLength = 0, but device does not think it'
-            'has all of the data yet.',
-        0x0a: "Device's firmware is corrupt. It cannot return to run-time "
-            "(non-DFU) operations.",
-        0x0b: 'iString indicates a vendor-specific error.',
-        0x0c: 'Device detected unexpected USB reset signaling.',
-        0x0d: 'Device detected unexpected power on reset.',
-        0x0e: 'Something went wrong, but the device does not know what is was.',
-        0x0f: 'Device stalled a unexpected request.',
-    }
-
-    @staticmethod
-    def find():
-        """
-        find all USB devices with a DFU interface
-        """
-        devices = []
-        for device in usb.core.find(find_all=True, idVendor=0x2886, idProduct=0x0018):
-            configuration = device.get_active_configuration()
-
-            for interface in configuration:
-                if interface.bInterfaceClass == 0xFE and interface.bInterfaceSubClass == 0x01:
-                    devices.append((device,  interface.bInterfaceNumber, configuration.bNumInterfaces))
-                    break
-
-        return devices
+class HID:
+    """
+    This class provides basic functions to access
+    a USB HID device to write an endpoint
+    """
 
     def __init__(self):
-        devices = self.find()
-        if not devices:
-            raise ValueError('No DFU device found')
+        self.dev = None
+        self.ep_in = None
+        self.ep_out = None
 
-        # TODO: support multiple devices
-        if len(devices) > 1:
-            raise ValueError('Multiple DFU devices found')
+    @staticmethod
+    def find(vid=0x2886, pid=0x0018):
+        dev = usb.core.find(idVendor=vid, idProduct=pid)
+        if not dev:
+            return
 
-        self.device, self.interface, self.num_interfaces = devices[0]
+        # get active config
+        config = dev.get_active_configuration()
 
-        # if self.device.is_kernel_driver_active(self.interface):
-        #     self.device.detach_kernel_driver(self.interface)
-
-        usb.util.claim_interface(self.device, self.interface)
-
-    def __enter__(self):
-        # TODO: suppose the device has more than 1 interface at Run-Time
-        if self.num_interfaces > 1:
-            print('entering dfu mode')
-            self._detach()
-            self.close()
-
-            # wait for re-enumerating device
-            timeout = 20
-            while timeout:
-                timeout -= 1
-                time.sleep(1)
-                devices = self.find()
-
-                if len(devices) and devices[0][2] == 1:
-                    print('found dfu device')
-                    break
-            else:
-                raise ValueError('No re-enumerated DFU device found')
-
-            self.device, self.interface, _ = devices[0]
-
-            # # Windows doesn't implement this
-            # if self.device.is_kernel_driver_active(self.interface):
-            #     self.device.detach_kernel_driver(self.interface)
-
-            usb.util.claim_interface(self.device, self.interface)
-
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        pass
-
-    def download(self, firmware):
-        """
-        Args:
-            firmware (file object): the file to download.
-        """
-        block_size = 64
-        block_number = 0
-        print('downloading')
-        while True:
-            data = firmware.read(block_size)
-            self._download(block_number, data)
-            status = self._get_status()[0]
-            if status:
-                raise IOError(self.DFU_STATUS_DICT[status])
-
-            block_number += 1
-            sys.stdout.write('{} bytes\r'.format(block_number * block_size))
-            sys.stdout.flush()
-
-            if not data:
+        # iterate on all interfaces:
+        #    - if we found a HID interface
+        interface_number = None
+        for interface in config:
+            if interface.bInterfaceClass == 0x03:
+                interface_number = interface.bInterfaceNumber
                 break
 
-        print('\ndone')
+        try:
+            if dev.is_kernel_driver_active(interface_number):
+                dev.detach_kernel_driver(interface_number)
+        except Exception as e:
+            print(e)
 
-    def upload(self, firmware):
-        pass
+        ep_in, ep_out = None, None
+        for ep in interface:
+            if ep.bEndpointAddress & 0x80:
+                ep_in = ep
+            else:
+                ep_out = ep
 
-    def _detach(self):
-        return self._out_request(self.DFU_DETACH)
+        if ep_in and ep_out:
+            hid = HID()
+            hid.dev = dev
+            hid.ep_in = ep_in
+            hid.ep_out = ep_out
 
-    def _download(self, block_number, data):
-        return self._out_request(self.DFU_DNLOAD, value=block_number, data=data)
+            return hid
 
+    def write(self, data):
+        """
+        write data on the OUT endpoint associated to the HID interface
+        """
+        self.ep_out.write(data)
 
-    def _get_status(self):
-        data = self._in_request(self.DFU_GETSTATUS, 6)
-
-        status = data[0]
-        timeout = data[1] + data[2] << 8 + data[3] << 16
-        state = data[4]
-        status_description = data[5]         # index of status description in string table
-
-        return status, timeout, state, status_description
-
-    def _clear_status(self):
-        return self._out_request(self.DFU_CLRSTATUS)
-
-    def _get_state(self):
-        return self._in_request(self.DFU_GETSTATE, 1)[0]
-
-    def _abort(self):
-        return self._out_request(self.DFU_ABORT)
-
-    def _out_request(self, request, value=0, data=None):
-        return self.device.ctrl_transfer(
-            usb.util.CTRL_OUT | usb.util.CTRL_TYPE_CLASS | usb.util.CTRL_RECIPIENT_INTERFACE,
-            request, value, self.interface, data, self.TIMEOUT)
-
-    def _in_request(self, request, length):
-        return self.device.ctrl_transfer(
-            usb.util.CTRL_IN | usb.util.CTRL_TYPE_CLASS | usb.util.CTRL_RECIPIENT_INTERFACE,
-            request, 0x0, self.interface, length, self.TIMEOUT)
+    def read(self):
+        return self.ep_in.read(self.ep_in.wMaxPacketSize, -1)
 
     def close(self):
         """
         close the interface
         """
-        usb.util.dispose_resources(self.device)
+        usb.util.dispose_resources(self.dev)
 
 
-class XMOS_DFU(DFU):
-    XMOS_DFU_RESETDEVICE = 0xf0
-    XMOS_DFU_REVERTFACTORY = 0xf1
-    XMOS_DFU_RESETINTODFU = 0xf2
-    XMOS_DFU_RESETFROMDFU = 0xf3
-    XMOS_DFU_SAVESTATE = 0xf5
-    XMOS_DFU_RESTORESTATE = 0xf6
+class PixelRing:
+    PIXELS_N = 12
+
+    MONO = 1
+    SPIN = 3
+    ARC  = 5
+    CUSTOM = 6
 
     def __init__(self):
-        super(XMOS_DFU, self).__init__()
+        self.hid = HID.find()
+        if not self.hid:
+            print('No USB device found')
 
-    def _detach(self):
-        return self._out_request(self.XMOS_DFU_RESETINTODFU)
+        colors = [0] * 4 * self.PIXELS_N
+        colors[0] = 0x4
+        colors[1] = 0x40
+        colors[2] = 0x4
 
-    def leave(self):
-        return self._out_request(self.XMOS_DFU_RESETFROMDFU)
+        colors[4 + 1] = 0x8
+        colors[4 * 11 + 1] = 0x8
 
-    def revertfactory(self):
-        return self._out_request(self.XMOS_DFU_REVERTFACTORY)
+        self.direction_template = colors
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.leave()   
+    def off(self):
+        self.set_color(rgb=0)
+
+    def set_color(self, rgb=None, r=0, g=0, b=0):
+        if rgb:
+            self.write(0, [self.MONO, rgb & 0xFF, (rgb >> 8) & 0xFF, (rgb >> 16) & 0xFF])
+        else:
+            self.write(0, [self.MONO, b, g, r])
+
+    def spin(self):
+        self.write(0, [self.SPIN, 0, 0, 0])
+
+    def arc(self, pixels):
+        self.write(0, [self.ARC, 0, 0, pixels])
+
+    def set_direction(self, angel):
+        if angel < 0 or angel > 360:
+            return
+
+        position = int((angel + 15) % 360 / 30) % self.PIXELS_N
+        colors = self.direction_template[-position*4:] + self.direction_template[:-position*4]
+
+        self.write(0, [self.CUSTOM, 0, 0, 0])
+        self.write(3, colors)
+
+        return position
+
+    @staticmethod
+    def to_bytearray(data):
+        if type(data) is int:
+            array = bytearray([data & 0xFF])
+        elif type(data) is bytearray:
+            array = data
+        elif type(data) is str or type(data) is bytes:
+            array = bytearray(data)
+        elif type(data) is list:
+            array = bytearray(data)
+        else:
+            raise TypeError('%s is not supported' % type(data))
+
+        return array
+
+    def write(self, address, data):
+        data = self.to_bytearray(data)
+        length = len(data)
+        if self.hid:
+            packet = bytearray([address & 0xFF, (address >> 8) & 0xFF, length & 0xFF, (length >> 8) & 0xFF]) + data
+            self.hid.write(packet)
+
+    def close(self):
+        if self.hid:
+            self.hid.close()
 
 
+pixel_ring = PixelRing()
 
-@click.command()
-@click.option('--download', '-d', nargs=1, type=click.File('rb'), help='the firmware to download')
-@click.option('--revertfactory', is_flag=True, help="factory reset")
-def main(download, revertfactory):
-    dev = XMOS_DFU()
-
-    with dev:
-        if download:
-            dev.download(download)
-        elif revertfactory:
-            dev.revertfactory()
-
-    dev.close()
 
 if __name__ == '__main__':
-    main()
+    import time
 
+    pixel_ring.spin()
+    time.sleep(3)
+    for level in range(4, 8):
+        pixel_ring.arc(level)
+        time.sleep(1)
+
+    angel = 0
+    while True:
+        try:
+            pixel_ring.set_direction(angel)
+            angel = (angel + 30) % 360
+            time.sleep(1)
+        except KeyboardInterrupt:
+            break
+
+    pixel_ring.off()
