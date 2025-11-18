@@ -1,7 +1,18 @@
 import time
 import cv2
 from picamera2 import Picamera2
+from datetime import datetime
 from ultralytics import YOLO
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("mosquito_visual.log"),
+        logging.StreamHandler()
+    ]
+)
 
 # Initialize camera
 picam2 = Picamera2()
@@ -29,10 +40,13 @@ try:
             for box, score in zip(boxes, scores):
                 if score < 0.4:
                     continue
+                
                 x1, y1, x2, y2 = map(int, box)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(frame, f"{score:.2f}", (x1, y1-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                logging.info(f"Mosquito detected at {timestamp} with confidence {score:.2f}")
 
         cv2.imshow("Mosquito Tracking", frame)
         if cv2.waitKey(1) == 27:  # ESC to exit
