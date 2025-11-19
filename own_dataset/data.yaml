@@ -1,0 +1,10 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['mosquito']
+
+roboflow:
+  workspace: mosquito-yo11o
+  project: mosquitno

@@ -11,7 +11,7 @@ from ultralytics import YOLO
 # ------------------------------
 
 # Path to your dataset yaml file
-DATA_YAML = '/home/mosquitno/Desktop/mosquitno/dataset/data.yaml'
+DATA_YAML = '/home/mosquitno/Desktop/mosquitno/own_dataset/data.yaml'
 
 # Pretrained YOLOv11 model (nano version for Raspberry Pi)
 PRETRAINED_MODEL = YOLO("yolo11n.pt")
@@ -19,9 +19,9 @@ PRETRAINED_MODEL = YOLO("yolo11n.pt")
 # Training parameters
 IMG_SIZE = 640        # Input image size
 BATCH_SIZE = 4        # Small batch for Raspberry Pi CPU
-EPOCHS = 8           # Number of epochs
+EPOCHS = 100           # Number of epochs
 PROJECT_NAME = 'mosquito_train'
-EXPERIMENT_NAME = 'exp1'  # Change if re-running
+EXPERIMENT_NAME = 'own_data_exp'  # Change if re-running
 
 # ------------------------------
 # 2️⃣ Initialize YOLO model
