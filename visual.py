@@ -20,7 +20,7 @@ picam2.start()
 time.sleep(1)
 
 # Load YOLO model
-model = YOLO('/home/mosquitno/Desktop/mosquitno/mosquito_train/exp15/weights/best.pt')  # replace with your trained weights
+model = YOLO('/home/mosquitno/Desktop/mosquitno/mosquito_train/own_data_exp7/weights/best.pt')  # replace with your trained weights
 
 try:
     while True:
